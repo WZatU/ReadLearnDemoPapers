@@ -1,0 +1,172 @@
+ # mapreduce_demo.py
+from collections import defaultdict
+from typing import Any, Callable, Dict, Iterable, List, Tuple
+
+K = Any
+V = Any
+KV = Tuple[K, V]
+
+# -----------------------------
+# Minimal MapReduce runner
+# -----------------------------
+def run_mapreduce(
+    inputs: Iterable[Any],
+    map_fn: Callable[[Any], List[KV]],
+    reduce_fn: Callable[[K, List[V]], List[KV]],
+    *,
+    sort_keys: bool = True,
+) -> List[KV]:
+    # Map
+    interm: List[KV] = []
+    for x in inputs:
+        interm.extend(map_fn(x))
+
+    # Shuffle / Group by key
+    groups: Dict[K, List[V]] = defaultdict(list)
+    for k, v in interm:
+        groups[k].append(v)
+
+    # Reduce
+    out: List[KV] = []
+    keys = sorted(groups.keys()) if sort_keys else list(groups.keys())
+    for k in keys:
+        out.extend(reduce_fn(k, groups[k]))
+    return out
+
+
+def pretty_print(title: str, kvs: List[KV], max_lines: int = 50):
+    print("\n" + "=" * 72)
+    print(title)
+    print("-" * 72)
+    for i, (k, v) in enumerate(kvs):
+        if i >= max_lines:
+            print(f"... ({len(kvs) - max_lines} more)")
+            break
+        print(f"{k}: {v}")
+    print("=" * 72)
+
+
+# -----------------------------
+# Dataset 1: Word Count
+# -----------------------------
+DOCS = [
+    ("doc1", "map reduce map shuffle reduce"),
+    ("doc2", "raft is not mapreduce but both are distributed"),
+    ("doc3", "shuffle is expensive network bandwidth is scarce"),
+]
+
+def wc_map(item: Tuple[str, str]) -> List[KV]:
+    _doc_id, text = item
+    words = [w.strip().lower() for w in text.split() if w.strip()]
+    return [(w, 1) for w in words]
+
+def wc_reduce(word: str, counts: List[int]) -> List[KV]:
+    return [(word, sum(counts))]
+
+
+# -----------------------------
+# Dataset 2: Inverted Index (word -> [doc_ids])
+# -----------------------------
+def inv_map(item: Tuple[str, str]) -> List[KV]:
+    doc_id, text = item
+    words = set(w.strip().lower() for w in text.split() if w.strip())
+    return [(w, doc_id) for w in words]
+
+def inv_reduce(word: str, doc_ids: List[str]) -> List[KV]:
+    # unique + sorted
+    return [(word, sorted(set(doc_ids)))]
+
+
+# -----------------------------
+# Dataset 3: Web log aggregation
+# (endpoint -> {count, unique_users, p95_ms})
+# -----------------------------
+LOGS = [
+    {"user": "u1", "endpoint": "/search", "lat_ms": 120},
+    {"user": "u2", "endpoint": "/search", "lat_ms": 80},
+    {"user": "u1", "endpoint": "/buy",    "lat_ms": 240},
+    {"user": "u3", "endpoint": "/search", "lat_ms": 300},
+    {"user": "u2", "endpoint": "/buy",    "lat_ms": 180},
+    {"user": "u4", "endpoint": "/search", "lat_ms": 90},
+    {"user": "u5", "endpoint": "/buy",    "lat_ms": 210},
+]
+
+def p95(xs: List[int]) -> int:
+    xs_sorted = sorted(xs)
+    if not xs_sorted:
+        return 0
+    # nearest-rank p95
+    import math
+    idx = max(0, math.ceil(0.95 * len(xs_sorted)) - 1)
+    return xs_sorted[idx]
+
+def logs_map(r: Dict[str, Any]) -> List[KV]:
+    # key = endpoint, value = (user, latency)
+    return [(r["endpoint"], (r["user"], r["lat_ms"]))]
+
+def logs_reduce(endpoint: str, vals: List[Tuple[str, int]]) -> List[KV]:
+    users = {u for (u, _ms) in vals}
+    lats = [ms for (_u, ms) in vals]
+    out = {
+        "count": len(vals),
+        "unique_users": len(users),
+        "p95_ms": p95(lats),
+        "avg_ms": sum(lats) / len(lats),
+    }
+    return [(endpoint, out)]
+
+
+# -----------------------------
+# Dataset 4: Reduce-side Join
+# (join user_profile with purchases)
+# Output: user -> total_spend
+# -----------------------------
+USER_PROFILE = [
+    ("u1", {"country": "US", "tier": "free"}),
+    ("u2", {"country": "US", "tier": "pro"}),
+    ("u3", {"country": "CA", "tier": "free"}),
+    ("u4", {"country": "CN", "tier": "pro"}),
+]
+
+PURCHASES = [
+    ("u1", {"sku": "A", "amount": 10}),
+    ("u1", {"sku": "B", "amount": 25}),
+    ("u2", {"sku": "A", "amount": 10}),
+    ("u4", {"sku": "C", "amount": 60}),
+]
+
+JOIN_INPUTS = [("profile", x) for x in USER_PROFILE] + [("purchase", x) for x in PURCHASES]
+
+def join_map(item: Tuple[str, Tuple[str, Any]]) -> List[KV]:
+    tag, (user, payload) = item
+    return [(user, (tag, payload))]
+
+def join_reduce(user: str, vals: List[Tuple[str, Any]]) -> List[KV]:
+    profile = None
+    total = 0
+    for tag, payload in vals:
+        if tag == "profile":
+            profile = payload
+        elif tag == "purchase":
+            total += payload["amount"]
+    # 只输出有 profile 的用户（常见做法）
+    if profile is None:
+        return []
+    return [(user, {"total_spend": total, "tier": profile["tier"], "country": profile["country"]})]
+
+
+# -----------------------------
+# Main
+# -----------------------------
+if __name__ == "__main__":
+    out1 = run_mapreduce(DOCS, wc_map, wc_reduce)
+    pretty_print("Exercise 1: Word Count", out1)
+
+    out2 = run_mapreduce(DOCS, inv_map, inv_reduce)
+    pretty_print("Exercise 2: Inverted Index", out2)
+
+    out3 = run_mapreduce(LOGS, logs_map, logs_reduce)
+    pretty_print("Exercise 3: Log Aggregation", out3)
+
+    out4 = run_mapreduce(JOIN_INPUTS, join_map, join_reduce)
+    pretty_print("Exercise 4: Reduce-side Join", out4)
