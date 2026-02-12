@@ -7,9 +7,7 @@ Rule: every paper folder must contain:
 2) a list of must-answer questions,
 3) a runnable Python demo that produces outputs.
 
-## Quick Start
+Part 1: 
+6.5840 mit distributed system
+Paper 1: MapReduce: Simplified Data Processing on Large Clusters
 
-```bash
-python -V
-pip install -r requirements.txt
-python papers/mapreduce_2004/mapreduce_demo.py
